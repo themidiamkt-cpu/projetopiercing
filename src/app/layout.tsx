@@ -15,6 +15,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Estudio lucrativo",
   description: "SaaS para CRM, agenda e acompanhamento de crescimento de estudios.",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({
