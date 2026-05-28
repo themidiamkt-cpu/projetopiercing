@@ -1,4 +1,4 @@
--- MVP final hardening for Piercing Growth Studio.
+-- MVP final hardening for Estudio lucrativo.
 -- Run this after the base schema/setup files.
 
 create extension if not exists btree_gist;

@@ -48,6 +48,11 @@ create table if not exists profiles (
   full_name text,
   email text,
   role user_role not null default 'studio_staff',
+  approval_status text not null default 'approved' check (approval_status in ('pending', 'approved', 'denied')),
+  approved_at timestamptz,
+  approved_by uuid references profiles(id) on delete set null,
+  denied_at timestamptz,
+  denied_by uuid references profiles(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

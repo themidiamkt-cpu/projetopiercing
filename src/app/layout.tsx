@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Piercing Growth Studio OS",
+  title: "Estudio lucrativo",
   description: "SaaS para CRM, agenda e acompanhamento de crescimento de estudios.",
 };
 

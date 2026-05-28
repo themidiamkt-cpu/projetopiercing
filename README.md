@@ -1,4 +1,4 @@
-# Piercing Growth Studio OS
+# Estudio lucrativo
 
 SaaS multiempresa para estudios de body piercing, tatuagem e estetica. O MVP 1 cobre CRM Kanban, leads, clientes, calendario base e webhook seguro para n8n com Supabase.
 

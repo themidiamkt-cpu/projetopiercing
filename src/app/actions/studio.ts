@@ -2,9 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server";
 import { getAppContext } from "@/lib/supabase/queries";
-import type { LeadStage } from "@/types/domain";
+import type { LeadStage, UserRole } from "@/types/domain";
 
 const crmPaths = ["/", "/crm", "/clientes", "/calendario", "/vendas", "/plano", "/relatorios", "/configuracoes"];
 
@@ -55,6 +55,110 @@ export async function updateGrowthPlanStartDate(formData: FormData) {
     .eq("id", context.studioId);
 
   revalidateApp();
+}
+
+export async function approveUserAccess(formData: FormData) {
+  const context = await getAppContext();
+
+  if (context.userRole !== "platform_admin") {
+    return;
+  }
+
+  const userId = value(formData, "user_id");
+  const studioId = value(formData, "studio_id");
+  const role = (value(formData, "role") ?? "studio_staff") as UserRole;
+
+  if (!userId || !studioId || !["studio_owner", "studio_staff"].includes(role)) {
+    return;
+  }
+
+  const serviceSupabase = createServiceSupabaseClient();
+  const { data: authUser } = await serviceSupabase.auth.admin.getUserById(userId);
+  const email = authUser.user?.email ?? null;
+  const fullName = typeof authUser.user?.user_metadata?.full_name === "string"
+    ? authUser.user.user_metadata.full_name
+    : null;
+
+  const { error: profileError } = await serviceSupabase.from("profiles").upsert({
+    id: userId,
+    full_name: fullName,
+    email,
+    role,
+    approval_status: "approved",
+    approved_at: new Date().toISOString(),
+    approved_by: context.userId,
+    denied_at: null,
+    denied_by: null,
+    updated_at: new Date().toISOString(),
+  });
+
+  if (profileError) {
+    return;
+  }
+
+  const { error: memberError } = await serviceSupabase.from("studio_members").upsert(
+    {
+      studio_id: studioId,
+      user_id: userId,
+      role,
+    },
+    { onConflict: "studio_id,user_id" },
+  );
+
+  if (memberError) {
+    return;
+  }
+
+  revalidatePath("/configuracoes");
+}
+
+export async function denyUserAccess(formData: FormData) {
+  const context = await getAppContext();
+
+  if (context.userRole !== "platform_admin") {
+    return;
+  }
+
+  const userId = value(formData, "user_id");
+
+  if (!userId) {
+    return;
+  }
+
+  const serviceSupabase = createServiceSupabaseClient();
+  const { data: authUser } = await serviceSupabase.auth.admin.getUserById(userId);
+  const email = authUser.user?.email ?? null;
+  const fullName = typeof authUser.user?.user_metadata?.full_name === "string"
+    ? authUser.user.user_metadata.full_name
+    : null;
+
+  const { error: profileError } = await serviceSupabase.from("profiles").upsert({
+    id: userId,
+    full_name: fullName,
+    email,
+    role: "studio_staff",
+    approval_status: "denied",
+    denied_at: new Date().toISOString(),
+    denied_by: context.userId,
+    approved_at: null,
+    approved_by: null,
+    updated_at: new Date().toISOString(),
+  });
+
+  if (profileError) {
+    return;
+  }
+
+  const { error: memberError } = await serviceSupabase
+    .from("studio_members")
+    .delete()
+    .eq("user_id", userId);
+
+  if (memberError) {
+    return;
+  }
+
+  revalidatePath("/configuracoes");
 }
 
 export async function moveLead(formData: FormData) {

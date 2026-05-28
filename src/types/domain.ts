@@ -1,5 +1,7 @@
 export type UserRole = "platform_admin" | "studio_owner" | "studio_staff";
 
+export type UserApprovalStatus = "pending" | "approved" | "denied";
+
 export type LeadStage =
   | "new"
   | "no_response"

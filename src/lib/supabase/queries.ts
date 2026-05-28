@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import type { Appointment, ChecklistTemplate, Customer, Lead, Sale } from "@/types/domain";
+import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server";
+import type { Appointment, ChecklistTemplate, Customer, Lead, Sale, UserApprovalStatus, UserRole } from "@/types/domain";
 
 export type AppContext = {
   studioId: string;
@@ -50,6 +50,23 @@ export type ReportData = {
   agencyInterestCount: number;
 };
 
+export type AdminStudioOption = {
+  id: string;
+  name: string;
+};
+
+export type AdminUserApprovalRow = {
+  userId: string;
+  email: string;
+  fullName?: string | null;
+  role: UserRole;
+  approvalStatus: UserApprovalStatus;
+  createdAt?: string | null;
+  lastSignInAt?: string | null;
+  studioId?: string | null;
+  studioName?: string | null;
+};
+
 export async function getAppContext(): Promise<AppContext> {
   const supabase = await createServerSupabaseClient();
   const {
@@ -60,11 +77,32 @@ export async function getAppContext(): Promise<AppContext> {
     redirect("/login");
   }
 
-  const { data: profile } = await supabase
+  let { data: profile, error: profileError } = await supabase
     .from("profiles")
-    .select("role,email")
+    .select("role,email,approval_status")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
+
+  if (profileError?.message?.includes("approval_status")) {
+    const fallbackProfile = await supabase
+      .from("profiles")
+      .select("role,email")
+      .eq("id", user.id)
+      .maybeSingle();
+    profile = fallbackProfile.data ? { ...fallbackProfile.data, approval_status: "approved" } : null;
+    profileError = fallbackProfile.error;
+  }
+
+  if (!profile) {
+    redirect("/login?error=Usuario aguardando aprovacao do administrador");
+  }
+
+  if (profile.role !== "platform_admin" && profile.approval_status !== "approved") {
+    const message = profile.approval_status === "denied"
+      ? "Acesso negado pelo administrador"
+      : "Usuario aguardando aprovacao do administrador";
+    redirect(`/login?error=${encodeURIComponent(message)}`);
+  }
 
   let studioQuery = supabase
     .from("studios")
@@ -72,7 +110,7 @@ export async function getAppContext(): Promise<AppContext> {
     .order("created_at", { ascending: true })
     .limit(1);
 
-  if (profile?.role !== "platform_admin") {
+  if (profile.role !== "platform_admin") {
     const { data: membership } = await supabase
       .from("studio_members")
       .select("studio_id")
@@ -101,7 +139,7 @@ export async function getAppContext(): Promise<AppContext> {
       .order("created_at", { ascending: true })
       .limit(1);
 
-    if (profile?.role !== "platform_admin") {
+    if (profile.role !== "platform_admin") {
       const { data: membership } = await supabase
         .from("studio_members")
         .select("studio_id")
@@ -133,7 +171,58 @@ export async function getAppContext(): Promise<AppContext> {
     inboundApiKey: studio.inbound_api_key,
     userId: user.id,
     userEmail: user.email,
-    userRole: profile?.role,
+    userRole: profile.role,
+  };
+}
+
+export async function getAdminUserApprovals(): Promise<{
+  users: AdminUserApprovalRow[];
+  studios: AdminStudioOption[];
+}> {
+  const context = await getAppContext();
+
+  if (context.userRole !== "platform_admin") {
+    return { users: [], studios: [] };
+  }
+
+  const serviceSupabase = createServiceSupabaseClient();
+  const [{ data: authUsers }, { data: profiles }, { data: members }, { data: studios }] = await Promise.all([
+    serviceSupabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+    serviceSupabase
+      .from("profiles")
+      .select("id,full_name,email,role,approval_status,created_at"),
+    serviceSupabase
+      .from("studio_members")
+      .select("user_id,studio_id,role"),
+    serviceSupabase
+      .from("studios")
+      .select("id,name")
+      .order("name", { ascending: true }),
+  ]);
+
+  const profileById = new Map((profiles ?? []).map((profile) => [profile.id as string, profile]));
+  const memberByUserId = new Map((members ?? []).map((member) => [member.user_id as string, member]));
+  const studioById = new Map((studios ?? []).map((studio) => [studio.id as string, studio]));
+
+  return {
+    studios: (studios ?? []) as AdminStudioOption[],
+    users: (authUsers.users ?? []).map((authUser) => {
+      const profile = profileById.get(authUser.id);
+      const member = memberByUserId.get(authUser.id);
+      const studio = member?.studio_id ? studioById.get(member.studio_id) : null;
+
+      return {
+        userId: authUser.id,
+        email: authUser.email ?? profile?.email ?? "sem-email",
+        fullName: profile?.full_name ?? null,
+        role: (member?.role ?? profile?.role ?? "studio_staff") as UserRole,
+        approvalStatus: (profile?.approval_status ?? "pending") as UserApprovalStatus,
+        createdAt: authUser.created_at ?? profile?.created_at ?? null,
+        lastSignInAt: authUser.last_sign_in_at ?? null,
+        studioId: member?.studio_id ?? null,
+        studioName: studio?.name ?? null,
+      };
+    }),
   };
 }
 
