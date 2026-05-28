@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { CalendarDays, CheckCircle2, LockKeyhole, LogIn, Sparkles, UsersRound } from "lucide-react";
+import { CalendarDays, CheckCircle2, LockKeyhole, LogIn, UsersRound } from "lucide-react";
 import { login } from "@/app/login/actions";
 import { Button } from "@/components/ui/button";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -40,15 +40,7 @@ export default async function LoginPage({
             <LoginFeature icon={CheckCircle2} label="Plano de crescimento acompanhado" />
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5">
-            <div className="flex items-center gap-2 text-sm font-medium text-white">
-              <Sparkles className="h-4 w-4 text-[#B08968]" />
-              Operacao mais leve, visual mais premium.
-            </div>
-            <p className="mt-3 text-xs leading-5 text-white/48">
-              Uma base para acompanhar contatos, atendimentos, retornos e execucao sem parecer sistema antigo.
-            </p>
-          </div>
+          <div />
         </section>
 
         <section className="flex items-center justify-center px-5 py-10 sm:px-8 lg:px-14">
