@@ -55,6 +55,28 @@ export type AdminStudioOption = {
   name: string;
 };
 
+export type GrowthDiagnosticValue = "yes" | "partial" | "no";
+
+export type AdminStudioGrowthRow = {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  createdAt: string;
+  growthPlanStartDate?: string | null;
+  checklistCount: number;
+  diagnostic?: {
+    instagram: GrowthDiagnosticValue;
+    google: GrowthDiagnosticValue;
+    atendimento: GrowthDiagnosticValue;
+    crm: GrowthDiagnosticValue;
+    conteudo: GrowthDiagnosticValue;
+    conversao: GrowthDiagnosticValue;
+    notes?: string | null;
+    updatedAt?: string | null;
+  } | null;
+};
+
 export type AdminUserApprovalRow = {
   userId: string;
   email: string;
@@ -186,7 +208,7 @@ export async function getAdminUserApprovals(): Promise<{
   }
 
   const serviceSupabase = createServiceSupabaseClient();
-  const [{ data: authUsers }, { data: profiles }, { data: members }, { data: studios }] = await Promise.all([
+  const [authUsersResponse, profilesResponse, membersResponse, studiosResponse] = await Promise.all([
     serviceSupabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
     serviceSupabase
       .from("profiles")
@@ -200,23 +222,32 @@ export async function getAdminUserApprovals(): Promise<{
       .order("name", { ascending: true }),
   ]);
 
+  let profiles = profilesResponse.data;
+  if (profilesResponse.error?.message?.includes("approval_status")) {
+    const fallbackProfiles = await serviceSupabase
+      .from("profiles")
+      .select("id,full_name,email,role,created_at");
+    profiles = (fallbackProfiles.data ?? []).map((profile) => ({ ...profile, approval_status: null }));
+  }
+
   const profileById = new Map((profiles ?? []).map((profile) => [profile.id as string, profile]));
-  const memberByUserId = new Map((members ?? []).map((member) => [member.user_id as string, member]));
-  const studioById = new Map((studios ?? []).map((studio) => [studio.id as string, studio]));
+  const memberByUserId = new Map((membersResponse.data ?? []).map((member) => [member.user_id as string, member]));
+  const studioById = new Map((studiosResponse.data ?? []).map((studio) => [studio.id as string, studio]));
 
   return {
-    studios: (studios ?? []) as AdminStudioOption[],
-    users: (authUsers.users ?? []).map((authUser) => {
+    studios: (studiosResponse.data ?? []) as AdminStudioOption[],
+    users: (authUsersResponse.data.users ?? []).map((authUser) => {
       const profile = profileById.get(authUser.id);
       const member = memberByUserId.get(authUser.id);
       const studio = member?.studio_id ? studioById.get(member.studio_id) : null;
+      const approvalStatus = profile?.approval_status ?? (member ? "approved" : "pending");
 
       return {
         userId: authUser.id,
         email: authUser.email ?? profile?.email ?? "sem-email",
         fullName: profile?.full_name ?? null,
         role: (member?.role ?? profile?.role ?? "studio_staff") as UserRole,
-        approvalStatus: (profile?.approval_status ?? "pending") as UserApprovalStatus,
+        approvalStatus: approvalStatus as UserApprovalStatus,
         createdAt: authUser.created_at ?? profile?.created_at ?? null,
         lastSignInAt: authUser.last_sign_in_at ?? null,
         studioId: member?.studio_id ?? null,
@@ -224,6 +255,64 @@ export async function getAdminUserApprovals(): Promise<{
       };
     }),
   };
+}
+
+export async function getAdminStudiosGrowth(): Promise<AdminStudioGrowthRow[]> {
+  const context = await getAppContext();
+
+  if (context.userRole !== "platform_admin") {
+    return [];
+  }
+
+  const serviceSupabase = createServiceSupabaseClient();
+  const [{ data: studios }, { data: checklistItems }, diagnosticResponse] = await Promise.all([
+    serviceSupabase
+      .from("studios")
+      .select("id,name,slug,status,created_at,growth_plan_start_date")
+      .order("created_at", { ascending: false }),
+    serviceSupabase
+      .from("checklist_items")
+      .select("studio_id"),
+    serviceSupabase
+      .from("growth_plan_assessments")
+      .select("studio_id,instagram_status,google_status,atendimento_status,crm_status,conteudo_status,conversao_status,notes,updated_at"),
+  ]);
+
+  const checklistCountByStudio = new Map<string, number>();
+  (checklistItems ?? []).forEach((item) => {
+    checklistCountByStudio.set(item.studio_id, (checklistCountByStudio.get(item.studio_id) ?? 0) + 1);
+  });
+
+  const diagnostics = diagnosticResponse.error
+    ? []
+    : (diagnosticResponse.data ?? []);
+  const diagnosticByStudio = new Map(diagnostics.map((item) => [item.studio_id as string, item]));
+
+  return (studios ?? []).map((studio) => {
+    const diagnostic = diagnosticByStudio.get(studio.id);
+
+    return {
+      id: studio.id,
+      name: studio.name,
+      slug: studio.slug,
+      status: studio.status,
+      createdAt: studio.created_at,
+      growthPlanStartDate: studio.growth_plan_start_date,
+      checklistCount: checklistCountByStudio.get(studio.id) ?? 0,
+      diagnostic: diagnostic
+        ? {
+            instagram: diagnostic.instagram_status as GrowthDiagnosticValue,
+            google: diagnostic.google_status as GrowthDiagnosticValue,
+            atendimento: diagnostic.atendimento_status as GrowthDiagnosticValue,
+            crm: diagnostic.crm_status as GrowthDiagnosticValue,
+            conteudo: diagnostic.conteudo_status as GrowthDiagnosticValue,
+            conversao: diagnostic.conversao_status as GrowthDiagnosticValue,
+            notes: diagnostic.notes,
+            updatedAt: diagnostic.updated_at,
+          }
+        : null,
+    };
+  });
 }
 
 export async function getStudioOverview(): Promise<StudioOverview> {
@@ -612,6 +701,36 @@ export async function getGrowthItems(studioId: string): Promise<GrowthItem[]> {
 
   const itemsByTemplate = new Map((items ?? []).map((item) => [item.template_id, item]));
   const progressByItem = new Map((progress ?? []).map((item) => [item.checklist_item_id, item]));
+
+  if (items?.length) {
+    return items
+      .sort((a, b) => {
+        const monthDiff = a.month_number - b.month_number;
+        if (monthDiff) return monthDiff;
+        const weekDiff = a.suggested_week - b.suggested_week;
+        if (weekDiff) return weekDiff;
+        return a.title.localeCompare(b.title);
+      })
+      .map((item) => {
+        const progressItem = progressByItem.get(item.id);
+
+        return {
+          id: item.template_id ?? item.id,
+          month_number: item.month_number,
+          suggested_week: item.suggested_week,
+          title: item.title,
+          description: item.description,
+          category: item.category,
+          points: item.points,
+          checklist_item_id: item.id,
+          progress_id: progressItem?.id ?? null,
+          status: progressItem?.status ?? "pending",
+          completed_at: progressItem?.completed_at ?? null,
+          evidence_text: progressItem?.evidence_text ?? null,
+          notes: progressItem?.notes ?? null,
+        } as GrowthItem;
+      });
+  }
 
   return ((templates ?? []) as ChecklistTemplate[]).map((template) => {
     const checklistItem = itemsByTemplate.get(template.id);

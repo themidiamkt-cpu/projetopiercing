@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server";
 import { getAppContext } from "@/lib/supabase/queries";
-import type { LeadStage, UserRole } from "@/types/domain";
+import type { ChecklistTemplate, LeadStage, UserRole } from "@/types/domain";
 
 const crmPaths = ["/", "/crm", "/clientes", "/calendario", "/vendas", "/plano", "/relatorios", "/configuracoes"];
 
@@ -57,6 +57,94 @@ export async function updateGrowthPlanStartDate(formData: FormData) {
   revalidateApp();
 }
 
+export async function updateStudioGrowthPlanStartDate(formData: FormData) {
+  const context = await getAppContext();
+  const studioId = value(formData, "studio_id");
+  const startDate = value(formData, "growth_plan_start_date");
+
+  if (context.userRole !== "platform_admin" || !studioId || !startDate) {
+    return;
+  }
+
+  const serviceSupabase = createServiceSupabaseClient();
+  await serviceSupabase
+    .from("studios")
+    .update({
+      growth_plan_start_date: startDate,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", studioId);
+
+  revalidatePath("/configuracoes");
+  revalidatePath("/plano");
+}
+
+export async function generateDefaultGrowthPlan(formData: FormData) {
+  const context = await getAppContext();
+  const studioId = value(formData, "studio_id");
+
+  if (context.userRole !== "platform_admin" || !studioId) {
+    return;
+  }
+
+  const serviceSupabase = createServiceSupabaseClient();
+  const { data: templates } = await serviceSupabase
+    .from("checklist_templates")
+    .select("*")
+    .order("month_number", { ascending: true })
+    .order("suggested_week", { ascending: true });
+
+  await replaceStudioChecklistItems(serviceSupabase, studioId, templates ?? []);
+  revalidatePath("/configuracoes");
+  revalidatePath("/plano");
+}
+
+export async function generatePersonalizedGrowthPlan(formData: FormData) {
+  const context = await getAppContext();
+  const studioId = value(formData, "studio_id");
+
+  if (context.userRole !== "platform_admin" || !studioId) {
+    return;
+  }
+
+  const serviceSupabase = createServiceSupabaseClient();
+  const answers = {
+    instagram: diagnosticValue(formData, "instagram_status"),
+    google: diagnosticValue(formData, "google_status"),
+    atendimento: diagnosticValue(formData, "atendimento_status"),
+    crm: diagnosticValue(formData, "crm_status"),
+    conteudo: diagnosticValue(formData, "conteudo_status"),
+    conversao: diagnosticValue(formData, "conversao_status"),
+  };
+
+  await serviceSupabase.from("growth_plan_assessments").upsert(
+    {
+      studio_id: studioId,
+      instagram_status: answers.instagram,
+      google_status: answers.google,
+      atendimento_status: answers.atendimento,
+      crm_status: answers.crm,
+      conteudo_status: answers.conteudo,
+      conversao_status: answers.conversao,
+      notes: value(formData, "notes"),
+      updated_by: context.userId,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "studio_id" },
+  );
+
+  const { data: templates } = await serviceSupabase
+    .from("checklist_templates")
+    .select("*")
+    .order("month_number", { ascending: true })
+    .order("suggested_week", { ascending: true });
+
+  const personalizedItems = buildPersonalizedGrowthItems(templates ?? [], answers, studioId);
+  await replaceStudioChecklistItems(serviceSupabase, studioId, personalizedItems);
+  revalidatePath("/configuracoes");
+  revalidatePath("/plano");
+}
+
 export async function approveUserAccess(formData: FormData) {
   const context = await getAppContext();
 
@@ -66,9 +154,9 @@ export async function approveUserAccess(formData: FormData) {
 
   const userId = value(formData, "user_id");
   const studioId = value(formData, "studio_id");
-  const role = (value(formData, "role") ?? "studio_staff") as UserRole;
+  const role = "studio_owner" as UserRole;
 
-  if (!userId || !studioId || !["studio_owner", "studio_staff"].includes(role)) {
+  if (!userId || !studioId) {
     return;
   }
 
@@ -79,22 +167,16 @@ export async function approveUserAccess(formData: FormData) {
     ? authUser.user.user_metadata.full_name
     : null;
 
-  const { error: profileError } = await serviceSupabase.from("profiles").upsert({
-    id: userId,
-    full_name: fullName,
+  const profileError = await upsertProfileForApproval(serviceSupabase, {
+    adminUserId: context.userId,
+    approvalStatus: "approved",
     email,
+    fullName,
     role,
-    approval_status: "approved",
-    approved_at: new Date().toISOString(),
-    approved_by: context.userId,
-    denied_at: null,
-    denied_by: null,
-    updated_at: new Date().toISOString(),
+    userId,
   });
 
-  if (profileError) {
-    return;
-  }
+  if (profileError) return;
 
   const { error: memberError } = await serviceSupabase.from("studio_members").upsert(
     {
@@ -132,22 +214,14 @@ export async function denyUserAccess(formData: FormData) {
     ? authUser.user.user_metadata.full_name
     : null;
 
-  const { error: profileError } = await serviceSupabase.from("profiles").upsert({
-    id: userId,
-    full_name: fullName,
+  await upsertProfileForApproval(serviceSupabase, {
+    adminUserId: context.userId,
+    approvalStatus: "denied",
     email,
-    role: "studio_staff",
-    approval_status: "denied",
-    denied_at: new Date().toISOString(),
-    denied_by: context.userId,
-    approved_at: null,
-    approved_by: null,
-    updated_at: new Date().toISOString(),
+    fullName,
+    role: "studio_owner",
+    userId,
   });
-
-  if (profileError) {
-    return;
-  }
 
   const { error: memberError } = await serviceSupabase
     .from("studio_members")
@@ -159,6 +233,229 @@ export async function denyUserAccess(formData: FormData) {
   }
 
   revalidatePath("/configuracoes");
+}
+
+async function upsertProfileForApproval(
+  serviceSupabase: ReturnType<typeof createServiceSupabaseClient>,
+  {
+    adminUserId,
+    approvalStatus,
+    email,
+    fullName,
+    role,
+    userId,
+  }: {
+    adminUserId: string;
+    approvalStatus: "approved" | "denied";
+    email: string | null;
+    fullName: string | null;
+    role: UserRole;
+    userId: string;
+  },
+) {
+  const now = new Date().toISOString();
+  const { error } = await serviceSupabase.from("profiles").upsert({
+    id: userId,
+    full_name: fullName,
+    email,
+    role,
+    approval_status: approvalStatus,
+    approved_at: approvalStatus === "approved" ? now : null,
+    approved_by: approvalStatus === "approved" ? adminUserId : null,
+    denied_at: approvalStatus === "denied" ? now : null,
+    denied_by: approvalStatus === "denied" ? adminUserId : null,
+    updated_at: now,
+  });
+
+  if (!error) return null;
+
+  const missingApprovalColumns = ["approval_status", "approved_at", "approved_by", "denied_at", "denied_by"].some((column) =>
+    error.message.includes(column),
+  );
+
+  if (!missingApprovalColumns) return error;
+
+  const fallback = await serviceSupabase.from("profiles").upsert({
+    id: userId,
+    full_name: fullName,
+    email,
+    role,
+    updated_at: now,
+  });
+
+  return fallback.error ?? null;
+}
+
+type DiagnosticAnswers = {
+  instagram: "yes" | "partial" | "no";
+  google: "yes" | "partial" | "no";
+  atendimento: "yes" | "partial" | "no";
+  crm: "yes" | "partial" | "no";
+  conteudo: "yes" | "partial" | "no";
+  conversao: "yes" | "partial" | "no";
+};
+
+function diagnosticValue(formData: FormData, key: string): "yes" | "partial" | "no" {
+  const raw = value(formData, key);
+  return raw === "yes" || raw === "no" ? raw : "partial";
+}
+
+function buildPersonalizedGrowthItems(
+  templates: ChecklistTemplate[],
+  answers: DiagnosticAnswers,
+  studioId: string,
+) {
+  const mustKeepCategories = new Set(["Conteudo", "Trafego", "Conversao"]);
+  const answerByCategory: Record<string, "yes" | "partial" | "no" | undefined> = {
+    Instagram: answers.instagram,
+    Google: answers.google,
+    Atendimento: answers.atendimento,
+    CRM: answers.crm,
+    Conteudo: answers.conteudo,
+    Conversao: answers.conversao,
+  };
+
+  const selectedTemplates = templates.filter((template) => {
+    const answer = answerByCategory[template.category];
+
+    if (mustKeepCategories.has(template.category)) return true;
+    if (!answer || answer === "no") return true;
+    if (answer === "partial") return template.month_number <= 2 || template.points >= 10;
+    return template.month_number >= 2 || template.points >= 20;
+  });
+
+  const customItems = buildDiagnosticGapItems(answers, studioId);
+
+  return [
+    ...selectedTemplates.map((template) => ({
+      studio_id: studioId,
+      template_id: template.id,
+      month_number: template.month_number,
+      suggested_week: template.suggested_week,
+      title: template.title,
+      description: template.description,
+      category: template.category,
+      points: template.points,
+    })),
+    ...customItems,
+  ];
+}
+
+function buildDiagnosticGapItems(answers: DiagnosticAnswers, studioId: string) {
+  const items = [];
+
+  if (answers.instagram !== "yes") {
+    items.push({
+      studio_id: studioId,
+      template_id: null,
+      month_number: 1,
+      suggested_week: 1,
+      title: "Prioridade: organizar Instagram antes de vender",
+      description: "Revisar bio, destaques, provas sociais e chamada para atendimento antes de intensificar divulgacao.",
+      category: "Instagram",
+      points: answers.instagram === "no" ? 20 : 10,
+    });
+  }
+
+  if (answers.google !== "yes") {
+    items.push({
+      studio_id: studioId,
+      template_id: null,
+      month_number: 1,
+      suggested_week: 2,
+      title: "Prioridade: fortalecer presenca local no Google",
+      description: "Conferir perfil, fotos, servicos, horarios e rotina de avaliacoes para buscas na cidade.",
+      category: "Google",
+      points: answers.google === "no" ? 20 : 10,
+    });
+  }
+
+  if (answers.atendimento !== "yes") {
+    items.push({
+      studio_id: studioId,
+      template_id: null,
+      month_number: 1,
+      suggested_week: 3,
+      title: "Prioridade: padronizar atendimento e follow-up",
+      description: "Criar respostas base, registrar objeções e definir quando retomar conversas paradas.",
+      category: "Atendimento",
+      points: answers.atendimento === "no" ? 20 : 10,
+    });
+  }
+
+  if (answers.crm !== "yes") {
+    items.push({
+      studio_id: studioId,
+      template_id: null,
+      month_number: 2,
+      suggested_week: 1,
+      title: "Prioridade: colocar o CRM na rotina",
+      description: "Usar o funil diariamente para novos contatos, follow-ups, clientes e retornos.",
+      category: "CRM",
+      points: answers.crm === "no" ? 20 : 10,
+    });
+  }
+
+  if (answers.conteudo !== "yes") {
+    items.push({
+      studio_id: studioId,
+      template_id: null,
+      month_number: 2,
+      suggested_week: 2,
+      title: "Prioridade: criar calendario simples de conteudo",
+      description: "Definir temas semanais de prova social, bastidores, cuidados e procedimentos.",
+      category: "Conteudo",
+      points: answers.conteudo === "no" ? 20 : 10,
+    });
+  }
+
+  if (answers.conversao !== "yes") {
+    items.push({
+      studio_id: studioId,
+      template_id: null,
+      month_number: 3,
+      suggested_week: 1,
+      title: "Prioridade: medir fechamento e motivos de perda",
+      description: "Comparar contatos, agendamentos, clientes fechadas e principais objeções.",
+      category: "Conversao",
+      points: answers.conversao === "no" ? 20 : 10,
+    });
+  }
+
+  return items;
+}
+
+async function replaceStudioChecklistItems(
+  serviceSupabase: ReturnType<typeof createServiceSupabaseClient>,
+  studioId: string,
+  items: Array<{
+    studio_id?: string;
+    template_id?: string | null;
+    month_number: number;
+    suggested_week: number;
+    title: string;
+    description?: string | null;
+    category: string;
+    points: number;
+  }>,
+) {
+  await serviceSupabase.from("studio_checklist_progress").delete().eq("studio_id", studioId);
+  await serviceSupabase.from("checklist_items").delete().eq("studio_id", studioId);
+
+  if (!items.length) return;
+
+  await serviceSupabase.from("checklist_items").insert(
+    items.map((item) => ({
+      studio_id: studioId,
+      template_id: item.template_id ?? null,
+      month_number: item.month_number,
+      suggested_week: item.suggested_week,
+      title: item.title,
+      description: item.description ?? null,
+      category: item.category,
+      points: item.points,
+    })),
+  );
 }
 
 export async function moveLead(formData: FormData) {

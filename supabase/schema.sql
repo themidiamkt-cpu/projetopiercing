@@ -229,6 +229,22 @@ create table if not exists studio_checklist_progress (
   unique (studio_id, checklist_item_id)
 );
 
+create table if not exists growth_plan_assessments (
+  id uuid primary key default gen_random_uuid(),
+  studio_id uuid not null references studios(id) on delete cascade unique,
+  instagram_status text not null default 'partial' check (instagram_status in ('yes', 'partial', 'no')),
+  google_status text not null default 'partial' check (google_status in ('yes', 'partial', 'no')),
+  atendimento_status text not null default 'partial' check (atendimento_status in ('yes', 'partial', 'no')),
+  crm_status text not null default 'partial' check (crm_status in ('yes', 'partial', 'no')),
+  conteudo_status text not null default 'partial' check (conteudo_status in ('yes', 'partial', 'no')),
+  conversao_status text not null default 'partial' check (conversao_status in ('yes', 'partial', 'no')),
+  notes text,
+  updated_by uuid references profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+
 create table if not exists execution_scores (
   id uuid primary key default gen_random_uuid(),
   studio_id uuid not null references studios(id) on delete cascade,
@@ -419,6 +435,7 @@ alter table notes enable row level security;
 alter table checklist_templates enable row level security;
 alter table checklist_items enable row level security;
 alter table studio_checklist_progress enable row level security;
+alter table growth_plan_assessments enable row level security;
 alter table execution_scores enable row level security;
 alter table agency_interest enable row level security;
 
@@ -490,6 +507,10 @@ for all using (is_platform_admin() or is_studio_member(studio_id))
 with check (is_platform_admin() or is_studio_member(studio_id));
 
 create policy "checklist progress tenant access" on studio_checklist_progress
+for all using (is_platform_admin() or is_studio_member(studio_id))
+with check (is_platform_admin() or is_studio_member(studio_id));
+
+create policy "growth plan assessments tenant access" on growth_plan_assessments
 for all using (is_platform_admin() or is_studio_member(studio_id))
 with check (is_platform_admin() or is_studio_member(studio_id));
 

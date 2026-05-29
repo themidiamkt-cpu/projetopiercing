@@ -1,14 +1,22 @@
 "use client";
 
 import { useState } from "react";
+import { useFormStatus } from "react-dom";
 import Image from "next/image";
 import { AlertCircle, CheckCircle2, Loader2, MessageCircle, QrCode, ShieldCheck, ShieldX } from "lucide-react";
-import { approveUserAccess, denyUserAccess, updateGrowthPlanStartDate } from "@/app/actions/studio";
+import {
+  approveUserAccess,
+  denyUserAccess,
+  generateDefaultGrowthPlan,
+  generatePersonalizedGrowthPlan,
+  updateGrowthPlanStartDate,
+  updateStudioGrowthPlanStartDate,
+} from "@/app/actions/studio";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field } from "@/components/forms/field";
 import { cn } from "@/lib/utils";
-import type { AdminStudioOption, AdminUserApprovalRow } from "@/lib/supabase/queries";
+import type { AdminStudioGrowthRow, AdminStudioOption, AdminUserApprovalRow } from "@/lib/supabase/queries";
 
 type SettingsTabsProps = {
   studioName: string;
@@ -17,6 +25,7 @@ type SettingsTabsProps = {
   growthPlanStartDate: string;
   canManageGrowthStartDate: boolean;
   canManageUserApprovals: boolean;
+  adminStudiosGrowth: AdminStudioGrowthRow[];
   userApprovals: AdminUserApprovalRow[];
   studios: AdminStudioOption[];
 };
@@ -24,6 +33,7 @@ type SettingsTabsProps = {
 const tabs = [
   { id: "studio", label: "Estudio" },
   { id: "whatsapp", label: "WhatsApp" },
+  { id: "studios", label: "Estudios" },
   { id: "users", label: "Usuarios" },
 ] as const;
 
@@ -34,6 +44,15 @@ type ConnectResult =
   | { kind: "json"; data: unknown }
   | { kind: "text"; text: string };
 
+const diagnosticQuestions = [
+  { id: "instagram_status", label: "Instagram organizado?" },
+  { id: "google_status", label: "Google Meu Negocio otimizado?" },
+  { id: "atendimento_status", label: "Atendimento com respostas e follow-up claros?" },
+  { id: "crm_status", label: "CRM em uso na rotina?" },
+  { id: "conteudo_status", label: "Conteudo publicado com frequencia?" },
+  { id: "conversao_status", label: "Fechamento e objecoes mapeados?" },
+] as const;
+
 export function SettingsTabs({
   studioName,
   studioSlug,
@@ -41,6 +60,7 @@ export function SettingsTabs({
   growthPlanStartDate,
   canManageGrowthStartDate,
   canManageUserApprovals,
+  adminStudiosGrowth,
   userApprovals,
   studios,
 }: SettingsTabsProps) {
@@ -77,7 +97,7 @@ export function SettingsTabs({
     <div className="space-y-4">
       <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 text-sm font-medium text-slate-600 shadow-sm">
         {tabs
-          .filter((tab) => tab.id !== "users" || canManageUserApprovals)
+          .filter((tab) => (tab.id !== "users" && tab.id !== "studios") || canManageUserApprovals)
           .map((tab) => (
           <button
             className={cn(
@@ -203,6 +223,10 @@ export function SettingsTabs({
       {activeTab === "users" && canManageUserApprovals ? (
         <UserAccessPanel studios={studios} users={userApprovals} />
       ) : null}
+
+      {activeTab === "studios" && canManageUserApprovals ? (
+        <AdminStudiosPanel studios={adminStudiosGrowth} />
+      ) : null}
     </div>
   );
 }
@@ -253,28 +277,12 @@ function UserAccessPanel({
                           ))}
                         </select>
                       </label>
-                      <label className="text-xs font-medium text-[#374151]">
-                        Permissao
-                        <select
-                          className="mt-1 h-10 rounded-xl border border-[#E7E5E4] bg-white px-3 text-sm outline-none focus:border-[#B08968]"
-                          defaultValue="studio_staff"
-                          name="role"
-                        >
-                          <option value="studio_owner">Dono do estudio</option>
-                          <option value="studio_staff">Colaborador</option>
-                        </select>
-                      </label>
-                      <Button className="h-10" disabled={!studios.length} type="submit">
-                        <ShieldCheck className="h-4 w-4" />
-                        Aceitar
-                      </Button>
+                      <input name="role" type="hidden" value="studio_owner" />
+                      <ApprovalSubmitButton disabled={!studios.length} />
                     </form>
                     <form action={denyUserAccess}>
                       <input name="user_id" type="hidden" value={user.userId} />
-                      <Button className="h-10 text-red-700 hover:bg-red-50" type="submit" variant="ghost">
-                        <ShieldX className="h-4 w-4" />
-                        Negar
-                      </Button>
+                      <DenySubmitButton />
                     </form>
                   </div>
                 </div>
@@ -318,10 +326,186 @@ function UserAccessPanel({
   );
 }
 
+function AdminStudiosPanel({ studios }: { studios: AdminStudioGrowthRow[] }) {
+  const [selectedStudioId, setSelectedStudioId] = useState(studios[0]?.id ?? "");
+  const selectedStudio = studios.find((studio) => studio.id === selectedStudioId) ?? studios[0];
+
+  if (!studios.length) {
+    return (
+      <Card>
+        <CardContent className="py-10 text-center text-sm text-[#6B7280]">
+          Nenhum estudio cadastrado ainda.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+      <Card>
+        <CardHeader>
+          <CardTitle>Estudios</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {studios.map((studio) => (
+            <button
+              className={cn(
+                "w-full rounded-2xl border px-4 py-3 text-left transition hover:border-[#B08968]/50 hover:bg-[#F7F7F5]",
+                selectedStudio?.id === studio.id ? "border-[#B08968] bg-[#F3EEE8]" : "border-[#E7E5E4] bg-white",
+              )}
+              key={studio.id}
+              onClick={() => setSelectedStudioId(studio.id)}
+              type="button"
+            >
+              <p className="text-sm font-semibold text-[#111111]">{studio.name}</p>
+              <p className="mt-1 text-xs text-[#6B7280]">{studio.checklistCount} tarefas no plano</p>
+            </button>
+          ))}
+        </CardContent>
+      </Card>
+
+      {selectedStudio ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Plano de Crescimento personalizado</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-3 md:grid-cols-3">
+              <AdminStudioMetric label="Estudio" value={selectedStudio.name} />
+              <AdminStudioMetric
+                label="Inicio do plano"
+                value={
+                  selectedStudio.growthPlanStartDate
+                    ? new Date(`${selectedStudio.growthPlanStartDate}T00:00:00`).toLocaleDateString("pt-BR")
+                    : "-"
+                }
+              />
+              <AdminStudioMetric label="Diagnostico" value={selectedStudio.diagnostic?.updatedAt ? "Respondido" : "Nao respondido"} />
+            </div>
+
+            <form action={updateStudioGrowthPlanStartDate} className="flex flex-col gap-3 rounded-2xl border border-[#E7E5E4] p-4 sm:flex-row sm:items-end">
+              <input name="studio_id" type="hidden" value={selectedStudio.id} />
+              <Field
+                defaultValue={selectedStudio.growthPlanStartDate ?? new Date().toISOString().slice(0, 10)}
+                label="Data de inicio do plano"
+                name="growth_plan_start_date"
+                required
+                type="date"
+              />
+              <Button type="submit">Salvar data</Button>
+            </form>
+
+            <form action={generatePersonalizedGrowthPlan} className="space-y-4 rounded-2xl border border-[#E7E5E4] p-4">
+              <input name="studio_id" type="hidden" value={selectedStudio.id} />
+              <div>
+                <p className="text-sm font-semibold text-[#111111]">Diagnostico rapido</p>
+                <p className="mt-1 text-sm text-[#6B7280]">
+                  Responda para montar tarefas mais coerentes com a fase atual do estudio.
+                </p>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                {diagnosticQuestions.map((question) => (
+                  <label className="rounded-2xl border border-[#E7E5E4] p-3 text-sm font-medium text-[#374151]" key={question.id}>
+                    {question.label}
+                    <select
+                      className="mt-2 h-10 w-full rounded-xl border border-[#E7E5E4] bg-white px-3 text-sm outline-none focus:border-[#B08968]"
+                      defaultValue={getDiagnosticDefault(selectedStudio, question.id)}
+                      name={question.id}
+                    >
+                      <option value="yes">Sim</option>
+                      <option value="partial">Mais ou menos</option>
+                      <option value="no">Nao</option>
+                    </select>
+                  </label>
+                ))}
+              </div>
+              <label className="block text-sm font-medium text-[#374151]">
+                Observacoes do admin
+                <textarea
+                  className="mt-2 min-h-24 w-full rounded-2xl border border-[#E7E5E4] bg-white px-3 py-3 text-sm outline-none focus:border-[#B08968]"
+                  defaultValue={selectedStudio.diagnostic?.notes ?? ""}
+                  name="notes"
+                  placeholder="Ex: precisa organizar Google primeiro, tem bons procedimentos mas falta rotina de follow-up..."
+                />
+              </label>
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                <DefaultPlanButton />
+                <PersonalizedPlanButton />
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function AdminStudioMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-[#E7E5E4] bg-[#F7F7F5] p-4">
+      <p className="text-xs uppercase tracking-[0.08em] text-[#8A8580]">{label}</p>
+      <p className="mt-1 font-semibold text-[#111111]">{value}</p>
+    </div>
+  );
+}
+
+function getDiagnosticDefault(studio: AdminStudioGrowthRow, key: (typeof diagnosticQuestions)[number]["id"]) {
+  if (key === "instagram_status") return studio.diagnostic?.instagram ?? "partial";
+  if (key === "google_status") return studio.diagnostic?.google ?? "partial";
+  if (key === "atendimento_status") return studio.diagnostic?.atendimento ?? "partial";
+  if (key === "crm_status") return studio.diagnostic?.crm ?? "partial";
+  if (key === "conteudo_status") return studio.diagnostic?.conteudo ?? "partial";
+  return studio.diagnostic?.conversao ?? "partial";
+}
+
+function DefaultPlanButton() {
+  const { pending } = useFormStatus();
+
+  return (
+    <Button disabled={pending} formAction={generateDefaultGrowthPlan} type="submit" variant="secondary">
+      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+      {pending ? "Aplicando..." : "Aplicar plano padrao"}
+    </Button>
+  );
+}
+
+function PersonalizedPlanButton() {
+  const { pending } = useFormStatus();
+
+  return (
+    <Button disabled={pending} type="submit">
+      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+      {pending ? "Montando plano..." : "Montar plano personalizado"}
+    </Button>
+  );
+}
+
 function getRoleLabel(role: string) {
   if (role === "platform_admin") return "Admin";
   if (role === "studio_owner") return "Dono do estudio";
   return "Colaborador";
+}
+
+function ApprovalSubmitButton({ disabled }: { disabled: boolean }) {
+  const { pending } = useFormStatus();
+
+  return (
+    <Button className="h-10 min-w-[150px]" disabled={disabled || pending} type="submit">
+      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+      {pending ? "Aceitando..." : "Aceitar cadastro"}
+    </Button>
+  );
+}
+
+function DenySubmitButton() {
+  const { pending } = useFormStatus();
+
+  return (
+    <Button className="h-10 min-w-[92px] text-red-700 hover:bg-red-50" disabled={pending} type="submit" variant="ghost">
+      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldX className="h-4 w-4" />}
+      {pending ? "Negando..." : "Negar"}
+    </Button>
+  );
 }
 
 function ConnectionStatusNotice({
